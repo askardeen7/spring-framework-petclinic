@@ -1,0 +1,56 @@
+- name: Configure MySQL DB Server
+  hosts: db
+  become: yes
+  vars:
+    db_name: petclinic
+    db_user: petclinic
+    db_password: petclinic
+    mysql_socket: /var/run/mysqld/mysqld.sock
+  tasks:
+    - name: Update apt
+      apt:
+        update_cache: yes
+
+    - name: Install MySQL server
+      apt:
+        name: mysql-server
+        state: present
+
+    - name: Install PyMySQL dependency
+      apt:
+        name: python3-pymysql
+        state: present
+
+    - name: Start and enable MySQL service
+      service:
+        name: mysql
+        state: started
+        enabled: true
+
+    - name: Create petclinic database
+      mysql_db:
+        name: "{{ db_name }}"
+        state: present
+        login_unix_socket: "{{ mysql_socket }}"
+
+    - name: Create petclinic user
+      mysql_user:
+        name: "{{ db_user }}"
+        password: "{{ db_password }}"
+        priv: "{{ db_name }}.*:ALL"
+        host: "%"
+        state: present
+        login_unix_socket: "{{ mysql_socket }}"
+
+    - name: Allow remote connections to MySQL
+      lineinfile:
+        path: /etc/mysql/mysql.conf.d/mysqld.cnf
+        regexp: '^bind-address'
+        line: 'bind-address = 0.0.0.0'
+      notify: Restart MySQL
+
+  handlers:
+    - name: Restart MySQL
+      service:
+        name: mysql
+        state: restarted

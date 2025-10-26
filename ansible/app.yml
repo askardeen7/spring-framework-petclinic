@@ -1,0 +1,146 @@
+- name: Configure Application Server
+  hosts: app
+  become: yes
+  tasks:
+    - name: Update apt
+      apt:
+        update_cache: yes
+
+    - name: Install dependencies
+      apt:
+        name:
+          - openjdk-17-jdk
+          - git
+          - nginx
+        state: present
+
+    - name: Create tomcat group
+      group:
+        name: tomcat
+        state: present
+
+    - name: Create tomcat user
+      user:
+        name: tomcat
+        shell: /bin/false
+        group: tomcat
+        system: yes
+
+    - name: Download Tomcat 10
+      get_url:
+        url: https://downloads.apache.org/tomcat/tomcat-10/v10.1.47/bin/apache-tomcat-10.1.47.tar.gz
+        dest: /tmp/apache-tomcat-10.tar.gz
+
+    - name: Extract Tomcat 10
+      unarchive:
+        src: /tmp/apache-tomcat-10.tar.gz
+        dest: /opt/
+        remote_src: yes
+
+    - name: Rename Tomcat directory
+      command: mv /opt/apache-tomcat-10.1.47 /opt/tomcat10
+      args:
+        creates: /opt/tomcat10
+
+    - name: Change ownership of Tomcat directory
+      file:
+        path: /opt/tomcat10
+        owner: tomcat
+        group: tomcat
+        recurse: yes
+
+    - name: Make Tomcat scripts executable
+      file:
+        path: /opt/tomcat10/bin
+        mode: "0755"
+        recurse: yes
+
+    - name: Create systemd service for Tomcat
+      copy:
+        dest: /etc/systemd/system/tomcat.service
+        content: |
+          [Unit]
+          Description=Apache Tomcat 10 Web Application Container
+          After=network.target
+
+          [Service]
+          Type=forking
+          User=tomcat
+          Group=tomcat
+
+          Environment="JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64"
+          Environment="CATALINA_PID=/opt/tomcat10/temp/tomcat.pid"
+          Environment="CATALINA_HOME=/opt/tomcat10"
+          Environment="CATALINA_BASE=/opt/tomcat10"
+          Environment="CATALINA_OPTS=-Xms512M -Xmx1024M -server -XX:+UseParallelGC"
+
+          ExecStart=/opt/tomcat10/bin/startup.sh
+          ExecStop=/opt/tomcat10/bin/shutdown.sh
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Start and enable Tomcat service
+      systemd:
+        name: tomcat
+        state: started
+        enabled: yes
+
+    - name: Download Petclinic source
+      git:
+        repo: "https://github.com/askardeen7/spring-framework-petclinic.git"
+        dest: /opt/petclinic
+
+    - name: Make Maven wrapper executable
+      file:
+        path: /opt/petclinic/mvnw
+        mode: "0755"
+
+    - name: Build WAR file
+      shell: "./mvnw package -P MySQL -U"
+      args:
+        chdir: /opt/petclinic
+
+    - name: Copy WAR to Tomcat
+      copy:
+        src: /opt/petclinic/target/petclinic.war
+        dest: /opt/tomcat10/webapps/petclinic.war
+        remote_src: yes
+
+    - name: Configure Nginx reverse proxy
+      copy:
+        dest: /etc/nginx/sites-available/petclinic
+        content: |
+          server {
+            listen 80;
+            location / {
+              proxy_pass http://127.0.0.1:8080/;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            }
+          }
+
+    - name: Enable Nginx site
+      file:
+        src: /etc/nginx/sites-available/petclinic
+        dest: /etc/nginx/sites-enabled/petclinic
+        state: link
+        force: yes
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Restart Nginx and Tomcat
+      service:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - nginx
+        - tomcat
